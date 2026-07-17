@@ -11,6 +11,8 @@ jobs:
     container: nvidia/cuda:12.4.1-devel-ubuntu22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust toolchain prerequisites
+        run: apt-get update -q && apt-get install -y -q curl ca-certificates gcc
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -19,4 +21,3 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets
       - run: cargo package --locked
-
