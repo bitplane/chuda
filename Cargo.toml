@@ -1,0 +1,37 @@
+[package]
+name = "chuda"
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-3.0-or-later"
+description = "CUDA-accelerated high quality truecolour ANSI image renderer"
+build = "build.rs"
+repository = "https://github.com/bitplane/chuda"
+keywords = ["ansi", "cuda", "terminal", "image", "cli"]
+categories = ["command-line-utilities", "multimedia::images"]
+include = [
+    "/src/**",
+    "/cuda/**",
+    "/vendor/chafa/internal/chafa-symbols.c",
+    "/vendor/chafa/internal/chafa-symbols-*.h",
+    "/vendor/chafa/COPYING",
+    "/vendor/chafa/COPYING.LESSER",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/build.rs",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+]
+
+[[bin]]
+name = "chuda"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

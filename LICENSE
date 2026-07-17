@@ -1,0 +1,8 @@
+Chuda is free software licensed under the GNU Lesser General Public License,
+version 3 or (at your option) any later version (LGPL-3.0-or-later).
+
+A verbatim copy of the GNU LGPL version 3 is included at
+`vendor/chafa/COPYING.LESSER`. The GNU GPL version 3 terms incorporated by
+that license are included at `vendor/chafa/COPYING`.
+
+SPDX-License-Identifier: LGPL-3.0-or-later

@@ -1,0 +1,22 @@
+# Rust and CUDA build output
+/target/
+
+# Local benchmark products
+/benchmark-results/
+
+# Development-only upstream checkout (required source is vendored separately)
+/upstream-chafa/
+
+# Python development-tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
