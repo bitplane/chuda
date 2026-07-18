@@ -38,29 +38,42 @@ pub fn render_png(
         }
     }
     let choices = gpu::render(&input, transparent_threshold)?;
+    Ok(encode_ansi(&choices, columns, rows))
+}
+
+fn encode_ansi(choices: &[gpu::Choice], columns: u32, rows: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((columns * rows * 32) as usize);
+    let mut previous_fg: Option<[u8; 3]> = None;
+    let mut previous_bg: Option<[u8; 3]> = None;
     for cy in 0..rows {
-        let mut previous: Option<([u8; 3], Option<[u8; 3]>)> = None;
         for cx in 0..columns {
             let choice = choices[(cy * columns + cx) as usize];
             let bg = (choice.transparent_bg == 0).then_some(choice.bg);
-            if previous != Some((choice.fg, bg)) {
-                if let Some(bg) = bg {
+            let fg_changed = previous_fg != Some(choice.fg);
+            let bg_changed = previous_bg != bg;
+            if fg_changed || bg_changed {
+                out.extend_from_slice(b"\x1b[");
+                if fg_changed {
                     write!(
                         out,
-                        "\x1b[38;2;{};{};{};48;2;{};{};{}m",
-                        choice.fg[0], choice.fg[1], choice.fg[2], bg[0], bg[1], bg[2]
-                    )
-                    .unwrap();
-                } else {
-                    write!(
-                        out,
-                        "\x1b[38;2;{};{};{};49m",
+                        "38;2;{};{};{}",
                         choice.fg[0], choice.fg[1], choice.fg[2]
                     )
                     .unwrap();
                 }
-                previous = Some((choice.fg, bg));
+                if bg_changed {
+                    if fg_changed {
+                        out.push(b';');
+                    }
+                    if let Some(bg) = bg {
+                        write!(out, "48;2;{};{};{}", bg[0], bg[1], bg[2]).unwrap();
+                    } else {
+                        out.extend_from_slice(b"49");
+                    }
+                }
+                out.push(b'm');
+                previous_fg = Some(choice.fg);
+                previous_bg = bg;
             }
             let mut utf8 = [0; 4];
             out.extend_from_slice(
@@ -70,9 +83,12 @@ pub fn render_png(
                     .as_bytes(),
             );
         }
-        out.extend_from_slice(b"\x1b[0m\n");
+        if cy + 1 < rows {
+            out.push(b'\n');
+        }
     }
-    Ok(out)
+    out.extend_from_slice(b"\x1b[0m\n");
+    out
 }
 
 #[cfg(test)]
@@ -142,5 +158,40 @@ mod tests {
         assert_eq!(choice.ch, ' ');
         assert_eq!(choice.fg, [12, 34, 56]);
         assert_eq!(choice.bg, [12, 34, 56]);
+    }
+
+    fn cell(ch: char, fg: [u8; 3], bg: Option<[u8; 3]>) -> gpu::Choice {
+        gpu::Choice {
+            codepoint: ch as u32,
+            fg,
+            bg: bg.unwrap_or_default(),
+            transparent_bg: u8::from(bg.is_none()),
+        }
+    }
+
+    #[test]
+    fn ansi_emission_only_writes_changed_colour_fields() {
+        let choices = [
+            cell('a', [1, 2, 3], Some([4, 5, 6])),
+            cell('b', [1, 2, 3], Some([7, 8, 9])),
+            cell('c', [10, 11, 12], Some([7, 8, 9])),
+            cell('d', [10, 11, 12], None),
+        ];
+        assert_eq!(
+            encode_ansi(&choices, 4, 1),
+            b"\x1b[38;2;1;2;3;48;2;4;5;6ma\x1b[48;2;7;8;9mb\x1b[38;2;10;11;12mc\x1b[49md\x1b[0m\n"
+        );
+    }
+
+    #[test]
+    fn ansi_emission_preserves_state_across_rows() {
+        let choices = [
+            cell('a', [1, 2, 3], Some([4, 5, 6])),
+            cell('b', [1, 2, 3], Some([4, 5, 6])),
+        ];
+        assert_eq!(
+            encode_ansi(&choices, 1, 2),
+            b"\x1b[38;2;1;2;3;48;2;4;5;6ma\nb\x1b[0m\n"
+        );
     }
 }
