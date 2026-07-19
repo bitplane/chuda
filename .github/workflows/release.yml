@@ -81,7 +81,7 @@ jobs:
       - name: Install build tools
         run: apt-get update -q && apt-get install -y -q curl ca-certificates gcc g++ python3 python3-pip
       - uses: dtolnay/rust-toolchain@stable
-      - run: python3 -m pip install --break-system-packages maturin
+      - run: python3 -m pip install maturin
       - run: maturin build --release --locked --features extension-module,cuda --compatibility linux --out dist
         env:
           CHUDA_STATIC_CUDART: "1"
@@ -103,7 +103,7 @@ jobs:
       - name: Smoke-test automatic CPU fallback without a GPU
         shell: bash
         run: |
-          python3 -m pip install --break-system-packages dist/*.whl
+          python3 -m pip install dist/*.whl
           python3 - <<'PY'
           import chuda
           image = chuda.Image.from_rgba(8, 8, bytes([1, 2, 3, 255]) * 64)
