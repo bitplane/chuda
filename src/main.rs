@@ -1,60 +1,41 @@
-mod gpu;
-mod render;
-mod symbols;
-
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
+use chuda::{Backend, RenderOptions, RenderRequest, Renderer, SourceImage};
 use clap::Parser;
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Args {
-    /// PNG file or a directory tree containing PNG files.
     input: PathBuf,
-
-    /// Output cell width. Height is derived from image and terminal aspect ratios.
     #[arg(short = 's', long = "size", value_name = "WIDTH")]
     width: u32,
-
-    /// Required for directory input. The input tree is mirrored here as .ansi files.
     #[arg(short, long, value_name = "DIR")]
     output: Option<PathBuf>,
-
-    /// Cell pixel aspect ratio (terminal cells are normally twice as tall as wide).
     #[arg(long, default_value_t = 2.0)]
     font_ratio: f32,
-
-    /// Bias toward detailed opaque cells. Edge transparency must improve the
-    /// fit by roughly this fraction of an 8x8 cell to win.
     #[arg(long, default_value_t = 0.10)]
     transparent_threshold: f32,
+    #[arg(long, default_value = "auto")]
+    backend: Backend,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    if args.width == 0 {
-        bail!("--size must be greater than zero");
-    }
-    if !(args.font_ratio.is_finite() && args.font_ratio > 0.0) {
-        bail!("--font-ratio must be a positive finite number");
-    }
-    if !(0.0..=1.0).contains(&args.transparent_threshold) {
-        bail!("--transparent-threshold must be between 0 and 1");
-    }
-
+    let options = RenderOptions {
+        font_ratio: args.font_ratio,
+        transparent_threshold: args.transparent_threshold,
+    };
+    let renderer = Renderer::new(args.backend);
     if args.input.is_file() {
-        let ansi = render::render_png(
-            &args.input,
-            args.width,
-            args.font_ratio,
-            args.transparent_threshold,
-        )?;
-        use std::io::Write;
-        std::io::stdout().lock().write_all(&ansi)?;
+        let image = SourceImage::open(&args.input)?;
+        let frame = renderer.render(RenderRequest::new(&image, args.width, options))?;
+        warn_fallback(&renderer);
+        std::io::stdout().lock().write_all(&frame.to_ansi())?;
         return Ok(());
     }
     if !args.input.is_dir() {
@@ -64,21 +45,21 @@ fn main() -> Result<()> {
         .output
         .as_ref()
         .context("--output is required for directory input")?;
-    render_tree(
-        &args.input,
-        output,
-        args.width,
-        args.font_ratio,
-        args.transparent_threshold,
-    )
+    render_tree(&renderer, &args.input, output, args.width, options)
+}
+
+fn warn_fallback(renderer: &Renderer) {
+    if let Some(warning) = renderer.take_fallback_warning() {
+        eprintln!("warning: {warning}");
+    }
 }
 
 fn render_tree(
+    renderer: &Renderer,
     root: &Path,
     output: &Path,
     width: u32,
-    font_ratio: f32,
-    transparent_threshold: f32,
+    options: RenderOptions,
 ) -> Result<()> {
     let mut pending = vec![root.to_path_buf()];
     let mut files = Vec::new();
@@ -89,7 +70,7 @@ fn render_tree(
                 pending.push(path);
             } else if path
                 .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
             {
                 files.push(path);
             }
@@ -97,15 +78,17 @@ fn render_tree(
     }
     files.sort();
     for input in files {
-        let relative = input.strip_prefix(root)?;
-        let mut target = output.join(relative);
+        let image =
+            SourceImage::open(&input).with_context(|| format!("rendering {}", input.display()))?;
+        let frame = renderer.render(RenderRequest::new(&image, width, options))?;
+        warn_fallback(renderer);
+        let mut target = output.join(input.strip_prefix(root)?);
         target.set_extension("ansi");
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        let ansi = render::render_png(&input, width, font_ratio, transparent_threshold)
-            .with_context(|| format!("rendering {}", input.display()))?;
-        fs::write(&target, ansi).with_context(|| format!("writing {}", target.display()))?;
+        fs::write(&target, frame.to_ansi())
+            .with_context(|| format!("writing {}", target.display()))?;
     }
     Ok(())
 }

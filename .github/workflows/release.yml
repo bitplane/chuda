@@ -1,0 +1,179 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*", "v*.*.*-*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag or ref to publish
+        required: true
+        default: v0.2.0
+
+permissions: {}
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - uses: dtolnay/rust-toolchain@stable
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_REF##*/}"
+          version="${version#v}"
+          cargo_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "chuda"))')"
+          python_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "$version" = "$cargo_version"
+          test "$version" = "$python_version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --all-targets --locked
+      - run: cargo package --locked -p chuda
+
+  build-wheel:
+    needs: [verify, test]
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.8.1-devel-ubuntu22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - name: Install build tools
+        run: apt-get update -q && apt-get install -y -q curl ca-certificates gcc g++ python3 python3-pip
+      - uses: dtolnay/rust-toolchain@stable
+      - run: python3 -m pip install --break-system-packages maturin
+      - run: maturin build --release --locked --features extension-module,cuda --compatibility linux --out dist
+        env:
+          CHUDA_STATIC_CUDART: "1"
+      - name: Verify the wheel has no dynamic CUDA runtime dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob
+          import zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          with zipfile.ZipFile(wheel) as archive:
+              archive.extractall("wheel-inspect")
+          PY
+          if find wheel-inspect -name '*.so' -exec readelf -d {} \; | grep -q 'libcudart'; then
+            echo "wheel unexpectedly depends on dynamic libcudart" >&2
+            exit 1
+          fi
+      - name: Smoke-test automatic CPU fallback without a GPU
+        shell: bash
+        run: |
+          python3 -m pip install --break-system-packages dist/*.whl
+          python3 - <<'PY'
+          import chuda
+          image = chuda.Image.from_rgba(8, 8, bytes([1, 2, 3, 255]) * 64)
+          frame = chuda.Renderer("auto").render(image, 1)
+          assert frame.backend == "cpu"
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-${{ needs.verify.outputs.version }}-linux-x86_64
+          path: dist/*.whl
+          if-no-files-found: error
+
+  build-sdist:
+    needs: [verify, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - run: python -m pip install maturin
+      - run: maturin sdist --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-${{ needs.verify.outputs.version }}-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish-crate:
+    needs: [verify, test]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish --locked -p chuda
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-pypi:
+    needs: [verify, build-wheel, build-sdist]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-${{ needs.verify.outputs.version }}-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
+
+  github-release:
+    needs: [verify, build-wheel, build-sdist, publish-crate, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-${{ needs.verify.outputs.version }}-*
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_REF }}
+          generate_release_notes: true
+          files: dist/*

@@ -1,6 +1,6 @@
 # chuda
 
-A CUDA-only, high-quality truecolour ANSI renderer for image-training
+A CPU and CUDA high-quality truecolour ANSI renderer for image-training
 pipelines. It implements the expensive part of Chafa's effort-9 symbol mode:
 exhaustive foreground/background fitting and error scoring over the narrow
 symbol atlas. PNG decode, high-quality resize and stateful ANSI emission stay
@@ -18,14 +18,14 @@ into the Rust binary. Chafa is not a build-time or runtime dependency.
 ## Requirements
 
 - Rust 1.85 or newer
-- NVIDIA driver
-- CUDA Toolkit (`nvcc` and `libcudart`; Ubuntu package: `nvidia-cuda-toolkit`)
+- CUDA Toolkit and an NVIDIA driver only when building or selecting the optional CUDA backend
 
 ## Build and run
 
 ```sh
 cargo build --release
 cargo run --release -- --size 80 image.png > image.ansi
+cargo run --release --features cuda -- --backend cuda --size 80 image.png > image.ansi
 ```
 
 Directory mode recursively mirrors PNG paths and changes their suffix to
@@ -40,8 +40,21 @@ intermediates behind.
 
 ## Architecture note
 
-The production scorer is implemented directly in `cuda/renderer.cu` and
-exposed to Rust through a small C ABI.
+The public Rust and Python APIs share decoding, resizing, structured frames,
+and ANSI emission. Rayon and CUDA implement interchangeable cell scorers.
+
+## Python
+
+The PyPI distribution is `chuda-ansi` and its import name is `chuda`:
+
+```python
+import chuda
+
+renderer = chuda.Renderer("auto")
+image = chuda.Image.open("image.png")
+frame = renderer.render(image, 80)
+ansi = frame.to_ansi()
+```
 
 ## Updating the symbol atlas
 

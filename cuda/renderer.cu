@@ -72,6 +72,17 @@ static Choice *cached_output = nullptr;
 static uint32_t cached_cells = 0;
 static uint32_t cached_symbols = 0;
 
+extern "C" int cb_cuda_available(char *message, size_t capacity) {
+    int count = 0;
+    cudaError_t e = cudaGetDeviceCount(&count);
+    if (e != cudaSuccess) return failure(e, message, capacity);
+    if (count == 0) {
+        if (message && capacity) snprintf(message, capacity, "no CUDA-capable device is detected");
+        return int(cudaErrorNoDevice);
+    }
+    return 0;
+}
+
 extern "C" int cb_render_cuda(const uint8_t *pixels,uint32_t cells,const uint64_t *masks,const uint32_t *codes,
  uint32_t nsymbols,Choice *output,float transparent_threshold,char *message,size_t capacity) {
     cudaError_t e=cudaSuccess;

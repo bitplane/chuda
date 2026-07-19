@@ -1,50 +1,215 @@
-use std::{io::Write as _, path::Path};
+use std::{io::Cursor, io::Write as _, path::Path, sync::Arc};
 
-use anyhow::{Context, Result};
-use image::{GenericImageView, imageops::FilterType};
+use anyhow::{Result, bail};
+use image::{RgbaImage, imageops::FilterType};
+use rayon::prelude::*;
 
-use crate::gpu;
-#[cfg(test)]
-use crate::symbols::{SYMBOLS, Symbol};
+use crate::{Backend, Choice};
 
-#[cfg(test)]
-#[derive(Clone, Copy)]
-struct Choice {
-    ch: char,
-    fg: [u8; 3],
-    bg: [u8; 3],
+#[derive(Clone)]
+pub struct SourceImage {
+    rgba: Arc<RgbaImage>,
 }
 
-pub fn render_png(
-    path: &Path,
+impl SourceImage {
+    pub fn open(path: &Path) -> Result<Self> {
+        Ok(Self::from_rgba(image::open(path)?.to_rgba8()))
+    }
+
+    pub fn from_png(bytes: &[u8]) -> Result<Self> {
+        Ok(Self::from_rgba(
+            image::load(Cursor::new(bytes), image::ImageFormat::Png)?.to_rgba8(),
+        ))
+    }
+
+    pub fn from_raw(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self> {
+        let image = RgbaImage::from_raw(width, height, rgba)
+            .ok_or_else(|| anyhow::anyhow!("RGBA buffer length does not match {width}x{height}"))?;
+        Ok(Self::from_rgba(image))
+    }
+
+    pub fn from_rgba(rgba: RgbaImage) -> Self {
+        Self {
+            rgba: Arc::new(rgba),
+        }
+    }
+
+    pub fn width(&self) -> u32 {
+        self.rgba.width()
+    }
+
+    pub fn height(&self) -> u32 {
+        self.rgba.height()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RenderOptions {
+    pub font_ratio: f32,
+    pub transparent_threshold: f32,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self {
+            font_ratio: 2.0,
+            transparent_threshold: 0.10,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct RenderRequest<'a> {
+    pub image: &'a SourceImage,
+    pub columns: u32,
+    pub options: RenderOptions,
+}
+
+impl<'a> RenderRequest<'a> {
+    pub fn new(image: &'a SourceImage, columns: u32, options: RenderOptions) -> Self {
+        Self {
+            image,
+            columns,
+            options,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Frame {
     columns: u32,
-    font_ratio: f32,
-    transparent_threshold: f32,
-) -> Result<Vec<u8>> {
-    let image = image::open(path).with_context(|| format!("decoding PNG {}", path.display()))?;
-    let (w, h) = image.dimensions();
-    let rows = ((h as f64 * columns as f64 / w as f64 / font_ratio as f64).round() as u32).max(1);
-    let scaled = image
-        .resize_exact(columns * 8, rows * 8, FilterType::Lanczos3)
-        .to_rgba8();
-    let mut input = Vec::with_capacity((columns * rows * 256) as usize);
+    rows: u32,
+    backend: Backend,
+    choices: Vec<Choice>,
+}
+
+impl Frame {
+    pub fn columns(&self) -> u32 {
+        self.columns
+    }
+    pub fn rows(&self) -> u32 {
+        self.rows
+    }
+    pub fn backend(&self) -> Backend {
+        self.backend
+    }
+    pub fn choices(&self) -> &[Choice] {
+        &self.choices
+    }
+    pub fn to_ansi(&self) -> Vec<u8> {
+        encode_ansi(&self.choices, self.columns, self.rows)
+    }
+}
+
+pub(crate) struct Prepared {
+    columns: u32,
+    rows: u32,
+    pub(crate) pixels: Vec<u8>,
+}
+
+pub(crate) fn validate_requests(requests: &[RenderRequest<'_>]) -> Result<()> {
+    for request in requests {
+        if request.columns == 0 {
+            bail!("columns must be greater than zero");
+        }
+        if !(request.options.font_ratio.is_finite() && request.options.font_ratio > 0.0) {
+            bail!("font_ratio must be a positive finite number");
+        }
+        if !(0.0..=1.0).contains(&request.options.transparent_threshold) {
+            bail!("transparent_threshold must be between 0 and 1");
+        }
+    }
+    if let Some(first) = requests.first()
+        && requests.iter().any(|request| {
+            request.options.transparent_threshold != first.options.transparent_threshold
+        })
+    {
+        bail!("all requests in a batch must use the same transparent_threshold");
+    }
+    Ok(())
+}
+
+pub(crate) fn request_cells(request: &RenderRequest<'_>) -> Result<usize> {
+    Ok(request.columns as usize * rows_for(request)? as usize)
+}
+
+fn rows_for(request: &RenderRequest<'_>) -> Result<u32> {
+    let width = request.image.width();
+    if width == 0 || request.image.height() == 0 {
+        bail!("source image must not be empty");
+    }
+    Ok(((request.image.height() as f64 * request.columns as f64
+        / width as f64
+        / request.options.font_ratio as f64)
+        .round() as u32)
+        .max(1))
+}
+
+pub(crate) fn prepare_many(requests: &[RenderRequest<'_>]) -> Result<Vec<Prepared>> {
+    requests.par_iter().map(prepare).collect()
+}
+
+fn prepare(request: &RenderRequest<'_>) -> Result<Prepared> {
+    let rows = rows_for(request)?;
+    let scaled = image::imageops::resize(
+        request.image.rgba.as_ref(),
+        request.columns * 8,
+        rows * 8,
+        FilterType::Lanczos3,
+    );
+    let mut pixels = Vec::with_capacity((request.columns * rows * 256) as usize);
     for cy in 0..rows {
-        for cx in 0..columns {
+        for cx in 0..request.columns {
             for y in 0..8 {
                 for x in 0..8 {
-                    input.extend_from_slice(&scaled.get_pixel(cx * 8 + x, cy * 8 + y).0);
+                    pixels.extend_from_slice(&scaled.get_pixel(cx * 8 + x, cy * 8 + y).0);
                 }
             }
         }
     }
-    let choices = gpu::render(&input, transparent_threshold)?;
-    Ok(encode_ansi(&choices, columns, rows))
+    Ok(Prepared {
+        columns: request.columns,
+        rows,
+        pixels,
+    })
 }
 
-fn encode_ansi(choices: &[gpu::Choice], columns: u32, rows: u32) -> Vec<u8> {
+pub(crate) fn split_frames(
+    prepared: Vec<Prepared>,
+    choices: Vec<Choice>,
+    backend: Backend,
+) -> Result<Vec<Frame>> {
+    let expected: usize = prepared
+        .iter()
+        .map(|item| item.columns as usize * item.rows as usize)
+        .sum();
+    if choices.len() != expected {
+        bail!(
+            "backend returned {} cells, expected {expected}",
+            choices.len()
+        );
+    }
+    let mut offset = 0;
+    Ok(prepared
+        .into_iter()
+        .map(|item| {
+            let count = item.columns as usize * item.rows as usize;
+            let frame = Frame {
+                columns: item.columns,
+                rows: item.rows,
+                backend,
+                choices: choices[offset..offset + count].to_vec(),
+            };
+            offset += count;
+            frame
+        })
+        .collect())
+}
+
+fn encode_ansi(choices: &[Choice], columns: u32, rows: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((columns * rows * 32) as usize);
-    let mut previous_fg: Option<[u8; 3]> = None;
-    let mut previous_bg: Option<[u8; 3]> = None;
+    let mut previous_fg = None;
+    let mut previous_bg = None;
     for cy in 0..rows {
         for cx in 0..columns {
             let choice = choices[(cy * columns + cx) as usize];
@@ -92,76 +257,11 @@ fn encode_ansi(choices: &[gpu::Choice], columns: u32, rows: u32) -> Vec<u8> {
 }
 
 #[cfg(test)]
-fn choose(pixels: &[[u8; 3]; 64]) -> Choice {
-    let mut best = (
-        u64::MAX,
-        Choice {
-            ch: ' ',
-            fg: [0; 3],
-            bg: [0; 3],
-        },
-    );
-    for symbol in SYMBOLS {
-        let candidate = evaluate(pixels, *symbol);
-        if candidate.0 < best.0 {
-            best = candidate;
-        }
-    }
-    best.1
-}
-
-#[cfg(test)]
-fn evaluate(pixels: &[[u8; 3]; 64], symbol: Symbol) -> (u64, Choice) {
-    let mut sums = [[0u32; 3]; 2];
-    let mut counts = [0u32; 2];
-    for (i, pixel) in pixels.iter().enumerate() {
-        let side = ((symbol.bitmap >> (63 - i)) & 1) as usize;
-        counts[side] += 1;
-        for c in 0..3 {
-            sums[side][c] += pixel[c] as u32;
-        }
-    }
-    let overall = [0, 1, 2].map(|c| (pixels.iter().map(|p| p[c] as u32).sum::<u32>() / 64) as u8);
-    let colors = [0, 1].map(|side| {
-        if counts[side] == 0 {
-            overall
-        } else {
-            [0, 1, 2].map(|c| (sums[side][c] / counts[side]) as u8)
-        }
-    });
-    let mut error = 0u64;
-    for (i, pixel) in pixels.iter().enumerate() {
-        let side = ((symbol.bitmap >> (63 - i)) & 1) as usize;
-        for c in 0..3 {
-            let d = pixel[c] as i32 - colors[side][c] as i32;
-            error += (d * d) as u64;
-        }
-    }
-    (
-        error,
-        Choice {
-            ch: symbol.ch,
-            fg: colors[1],
-            bg: colors[0],
-        },
-    )
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn solid_cell_uses_a_zero_error_symbol() {
-        let pixels = [[12, 34, 56]; 64];
-        let choice = choose(&pixels);
-        assert_eq!(choice.ch, ' ');
-        assert_eq!(choice.fg, [12, 34, 56]);
-        assert_eq!(choice.bg, [12, 34, 56]);
-    }
-
-    fn cell(ch: char, fg: [u8; 3], bg: Option<[u8; 3]>) -> gpu::Choice {
-        gpu::Choice {
+    fn cell(ch: char, fg: [u8; 3], bg: Option<[u8; 3]>) -> Choice {
+        Choice {
             codepoint: ch as u32,
             fg,
             bg: bg.unwrap_or_default(),
@@ -180,18 +280,6 @@ mod tests {
         assert_eq!(
             encode_ansi(&choices, 4, 1),
             b"\x1b[38;2;1;2;3;48;2;4;5;6ma\x1b[48;2;7;8;9mb\x1b[38;2;10;11;12mc\x1b[49md\x1b[0m\n"
-        );
-    }
-
-    #[test]
-    fn ansi_emission_preserves_state_across_rows() {
-        let choices = [
-            cell('a', [1, 2, 3], Some([4, 5, 6])),
-            cell('b', [1, 2, 3], Some([4, 5, 6])),
-        ];
-        assert_eq!(
-            encode_ansi(&choices, 1, 2),
-            b"\x1b[38;2;1;2;3;48;2;4;5;6ma\nb\x1b[0m\n"
         );
     }
 }

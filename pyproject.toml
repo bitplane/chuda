@@ -1,0 +1,26 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "chuda-ansi"
+version = "0.1.1"
+description = "CPU and CUDA high-quality truecolour ANSI image renderer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "LGPL-3.0-or-later"
+authors = [{ name = "Gareth Davidson", email = "gaz@bitplane.net" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+]
+
+[tool.maturin]
+manifest-path = "crates/chuda-python/Cargo.toml"
+module-name = "chuda"
+features = ["extension-module"]
+
+[dependency-groups]
+dev = ["maturin>=1.8,<2", "pytest>=8"]

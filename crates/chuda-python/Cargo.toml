@@ -1,0 +1,21 @@
+[package]
+name = "chuda-python"
+version = "0.1.1"
+edition = "2024"
+publish = false
+license = "LGPL-3.0-or-later"
+
+[lib]
+name = "chuda"
+crate-type = ["cdylib"]
+
+[features]
+default = ["cpu"]
+extension-module = ["pyo3/extension-module"]
+cpu = ["chuda-core/cpu"]
+cuda = ["chuda-core/cuda"]
+
+[dependencies]
+anyhow = "1.0.102"
+chuda-core = { package = "chuda", path = "../..", default-features = false }
+pyo3 = { version = "0.29.0", features = ["abi3-py310"] }
