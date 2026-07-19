@@ -82,7 +82,7 @@ jobs:
         run: apt-get update -q && apt-get install -y -q curl ca-certificates gcc g++ python3 python3-pip
       - uses: dtolnay/rust-toolchain@stable
       - run: python3 -m pip install maturin
-      - run: maturin build --release --locked --features extension-module,cuda --compatibility linux --out dist
+      - run: maturin build --release --locked --features extension-module,cuda --compatibility manylinux_2_35 --out dist
         env:
           CHUDA_STATIC_CUDART: "1"
       - name: Verify the wheel has no dynamic CUDA runtime dependency
