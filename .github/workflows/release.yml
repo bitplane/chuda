@@ -36,10 +36,18 @@ jobs:
           set -euo pipefail
           version="${RELEASE_REF##*/}"
           version="${version#v}"
-          cargo_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "chuda"))')"
+          cargo metadata --no-deps --format-version 1 > metadata.json
           python_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          test "$version" = "$cargo_version"
           test "$version" = "$python_version"
+          python3 - <<'PY' "$version"
+          import json
+          import sys
+          expected = sys.argv[1]
+          packages = json.load(open("metadata.json", encoding="utf-8"))["packages"]
+          mismatches = [(package["name"], package["version"]) for package in packages if package["version"] != expected]
+          if mismatches:
+              raise SystemExit(f"Cargo package versions do not match {expected}: {mismatches}")
+          PY
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   test:
