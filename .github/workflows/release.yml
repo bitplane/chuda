@@ -147,7 +147,17 @@ jobs:
         with:
           ref: ${{ env.RELEASE_REF }}
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo publish --locked -p chuda
+      - name: Publish crate unless this version already exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_REF##*/}"
+          version="${version#v}"
+          if cargo info "chuda@${version}" >/dev/null 2>&1; then
+            echo "chuda ${version} is already published; skipping"
+          else
+            cargo publish --locked -p chuda
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -166,7 +176,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
-          password: ${{ secrets.PYPI_API_TOKEN }}
+          password: ${{ secrets.PYPI_TOKEN }}
           skip-existing: true
 
   github-release:
