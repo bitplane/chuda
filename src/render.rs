@@ -1,7 +1,7 @@
 use std::{io::Cursor, io::Write as _, path::Path, sync::Arc};
 
 use anyhow::{Result, bail};
-use image::{RgbaImage, imageops::FilterType};
+use image::{Rgba, Rgba32FImage, RgbaImage, imageops::FilterType};
 use rayon::prelude::*;
 
 use crate::{Backend, Choice};
@@ -151,12 +151,7 @@ pub(crate) fn prepare_many(requests: &[RenderRequest<'_>]) -> Result<Vec<Prepare
 
 fn prepare(request: &RenderRequest<'_>) -> Result<Prepared> {
     let rows = rows_for(request)?;
-    let scaled = image::imageops::resize(
-        request.image.rgba.as_ref(),
-        request.columns * 8,
-        rows * 8,
-        FilterType::Lanczos3,
-    );
+    let scaled = resize_rgba(request.image.rgba.as_ref(), request.columns * 8, rows * 8);
     let mut pixels = Vec::with_capacity((request.columns * rows * 256) as usize);
     for cy in 0..rows {
         for cx in 0..request.columns {
@@ -171,6 +166,41 @@ fn prepare(request: &RenderRequest<'_>) -> Result<Prepared> {
         columns: request.columns,
         rows,
         pixels,
+    })
+}
+
+fn resize_rgba(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
+    if source.dimensions() == (width, height) {
+        return source.clone();
+    }
+    if source.pixels().all(|pixel| pixel[3] == 255) {
+        return image::imageops::resize(source, width, height, FilterType::Lanczos3);
+    }
+    // Filter premultiplied floats so hidden RGB cannot bleed into sprite edges,
+    // and low-alpha colors retain precision until the final conversion to u8.
+    let premultiplied = Rgba32FImage::from_fn(source.width(), source.height(), |x, y| {
+        let pixel = source.get_pixel(x, y);
+        let alpha = pixel[3] as f32 / 255.0;
+        Rgba([
+            pixel[0] as f32 / 255.0 * alpha,
+            pixel[1] as f32 / 255.0 * alpha,
+            pixel[2] as f32 / 255.0 * alpha,
+            alpha,
+        ])
+    });
+    let scaled = image::imageops::resize(&premultiplied, width, height, FilterType::Lanczos3);
+    RgbaImage::from_fn(width, height, |x, y| {
+        let pixel = scaled.get_pixel(x, y);
+        let alpha = (pixel[3].clamp(0.0, 1.0) * 255.0).round() as u8;
+        if alpha == 0 {
+            return Rgba([0; 4]);
+        }
+        Rgba([
+            (pixel[0] / pixel[3] * 255.0).round().clamp(0.0, 255.0) as u8,
+            (pixel[1] / pixel[3] * 255.0).round().clamp(0.0, 255.0) as u8,
+            (pixel[2] / pixel[3] * 255.0).round().clamp(0.0, 255.0) as u8,
+            alpha,
+        ])
     })
 }
 
@@ -259,6 +289,26 @@ fn encode_ansi(choices: &[Choice], columns: u32, rows: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resizing_ignores_rgb_of_fully_transparent_pixels() {
+        let source = |hidden| {
+            RgbaImage::from_fn(64, 64, |x, y| {
+                if (x + y) % 2 == 0 {
+                    Rgba(hidden)
+                } else {
+                    Rgba([255, 0, 0, 255])
+                }
+            })
+        };
+        let red = resize_rgba(&source([255, 0, 0, 0]), 8, 8);
+        let blue = resize_rgba(&source([0, 0, 255, 0]), 8, 8);
+        assert_eq!(red, blue);
+        for pixel in red.pixels() {
+            assert_eq!(&pixel.0[..3], &[255, 0, 0]);
+            assert!((126..=129).contains(&pixel[3]));
+        }
+    }
 
     fn cell(ch: char, fg: [u8; 3], bg: Option<[u8; 3]>) -> Choice {
         Choice {
