@@ -1,4 +1,5 @@
 mod render;
+#[cfg(any(feature = "cpu", feature = "cuda"))]
 mod symbols;
 
 #[cfg(feature = "cpu")]
@@ -199,7 +200,7 @@ pub fn render_png(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "cuda")]
+    #[cfg(all(feature = "cpu", feature = "cuda"))]
     use std::path::PathBuf;
 
     #[test]
@@ -209,7 +210,7 @@ mod tests {
         assert!("other".parse::<Backend>().is_err());
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(all(feature = "cpu", feature = "cuda"))]
     #[test]
     #[ignore = "requires a working NVIDIA GPU"]
     fn cpu_and_cuda_frames_are_identical() {

@@ -2,6 +2,7 @@ use std::{io::Cursor, io::Write as _, path::Path, sync::Arc};
 
 use anyhow::{Result, bail};
 use image::{Rgba, Rgba32FImage, RgbaImage, imageops::FilterType};
+#[cfg(feature = "cpu")]
 use rayon::prelude::*;
 
 use crate::{Backend, Choice};
@@ -165,7 +166,14 @@ fn rows_for(request: &RenderRequest<'_>) -> Result<u32> {
 }
 
 pub(crate) fn prepare_many(requests: &[RenderRequest<'_>]) -> Result<Vec<Prepared>> {
-    requests.par_iter().map(prepare).collect()
+    #[cfg(feature = "cpu")]
+    {
+        requests.par_iter().map(prepare).collect()
+    }
+    #[cfg(not(feature = "cpu"))]
+    {
+        requests.iter().map(prepare).collect()
+    }
 }
 
 fn prepare(request: &RenderRequest<'_>) -> Result<Prepared> {
