@@ -33,7 +33,7 @@ members = ["crates/chuda-python"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.3"
+version = "0.2.4"
 rust-version = "1.88"
 
 [features]
