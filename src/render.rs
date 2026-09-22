@@ -273,7 +273,7 @@ fn encode_ansi(choices: &[Choice], columns: u32, rows: u32) -> Vec<u8> {
             let choice = choices[cy as usize * columns as usize + cx as usize];
             let bg = (choice.transparent_bg == 0).then_some(choice.bg);
             let fg_changed = previous_fg != Some(choice.fg);
-            let bg_changed = previous_bg != bg;
+            let bg_changed = previous_bg != Some(bg);
             if fg_changed || bg_changed {
                 out.extend_from_slice(b"\x1b[");
                 if fg_changed {
@@ -296,7 +296,7 @@ fn encode_ansi(choices: &[Choice], columns: u32, rows: u32) -> Vec<u8> {
                 }
                 out.push(b'm');
                 previous_fg = Some(choice.fg);
-                previous_bg = bg;
+                previous_bg = Some(bg);
             }
             let mut utf8 = [0; 4];
             out.extend_from_slice(
@@ -374,6 +374,15 @@ mod tests {
             bg: bg.unwrap_or_default(),
             transparent_bg: u8::from(bg.is_none()),
         }
+    }
+
+    #[test]
+    fn leading_transparent_cells_select_the_default_background() {
+        let choices = [cell(' ', [0, 0, 0], None), cell(' ', [0, 0, 0], None)];
+        assert_eq!(
+            encode_ansi(&choices, 2, 1),
+            b"\x1b[38;2;0;0;0;49m  \x1b[0m\n"
+        );
     }
 
     #[test]
