@@ -6,6 +6,9 @@ use rayon::prelude::*;
 
 use crate::{Backend, Choice};
 
+// Bound a frame's cell-major RGBA buffer to 256 MiB before resizing.
+const MAX_FRAME_CELLS: usize = 1_048_576;
+
 #[derive(Clone)]
 pub struct SourceImage {
     rgba: Arc<RgbaImage>,
@@ -118,6 +121,7 @@ pub(crate) fn validate_requests(requests: &[RenderRequest<'_>]) -> Result<()> {
         if !(0.0..=1.0).contains(&request.options.transparent_threshold) {
             bail!("transparent_threshold must be between 0 and 1");
         }
+        request_cells(request)?;
     }
     if let Some(first) = requests.first()
         && requests.iter().any(|request| {
@@ -130,7 +134,18 @@ pub(crate) fn validate_requests(requests: &[RenderRequest<'_>]) -> Result<()> {
 }
 
 pub(crate) fn request_cells(request: &RenderRequest<'_>) -> Result<usize> {
-    Ok(request.columns as usize * rows_for(request)? as usize)
+    let rows = rows_for(request)?;
+    request
+        .columns
+        .checked_mul(8)
+        .ok_or_else(|| anyhow::anyhow!("render width is too large"))?;
+    rows.checked_mul(8)
+        .ok_or_else(|| anyhow::anyhow!("render height is too large"))?;
+    let cells = (request.columns as usize)
+        .checked_mul(rows as usize)
+        .filter(|&cells| cells <= MAX_FRAME_CELLS)
+        .ok_or_else(|| anyhow::anyhow!("render exceeds the {MAX_FRAME_CELLS}-cell frame limit"))?;
+    Ok(cells)
 }
 
 fn rows_for(request: &RenderRequest<'_>) -> Result<u32> {
@@ -138,11 +153,15 @@ fn rows_for(request: &RenderRequest<'_>) -> Result<u32> {
     if width == 0 || request.image.height() == 0 {
         bail!("source image must not be empty");
     }
-    Ok(((request.image.height() as f64 * request.columns as f64
+    let rows = (request.image.height() as f64 * request.columns as f64
         / width as f64
         / request.options.font_ratio as f64)
-        .round() as u32)
-        .max(1))
+        .round()
+        .max(1.0);
+    if !rows.is_finite() || rows > u32::MAX as f64 {
+        bail!("render height is too large");
+    }
+    Ok(rows as u32)
 }
 
 pub(crate) fn prepare_many(requests: &[RenderRequest<'_>]) -> Result<Vec<Prepared>> {
@@ -150,9 +169,10 @@ pub(crate) fn prepare_many(requests: &[RenderRequest<'_>]) -> Result<Vec<Prepare
 }
 
 fn prepare(request: &RenderRequest<'_>) -> Result<Prepared> {
+    let cells = request_cells(request)?;
     let rows = rows_for(request)?;
     let scaled = resize_rgba(request.image.rgba.as_ref(), request.columns * 8, rows * 8);
-    let mut pixels = Vec::with_capacity((request.columns * rows * 256) as usize);
+    let mut pixels = Vec::with_capacity(cells * 256);
     for cy in 0..rows {
         for cx in 0..request.columns {
             for y in 0..8 {
@@ -237,12 +257,12 @@ pub(crate) fn split_frames(
 }
 
 fn encode_ansi(choices: &[Choice], columns: u32, rows: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity((columns * rows * 32) as usize);
+    let mut out = Vec::with_capacity(choices.len() * 32);
     let mut previous_fg = None;
     let mut previous_bg = None;
     for cy in 0..rows {
         for cx in 0..columns {
-            let choice = choices[(cy * columns + cx) as usize];
+            let choice = choices[cy as usize * columns as usize + cx as usize];
             let bg = (choice.transparent_bg == 0).then_some(choice.bg);
             let fg_changed = previous_fg != Some(choice.fg);
             let bg_changed = previous_bg != bg;
@@ -289,6 +309,35 @@ fn encode_ansi(choices: &[Choice], columns: u32, rows: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_requests_return_errors_before_allocation() {
+        let image = SourceImage::from_raw(1, 1, vec![255; 4]).unwrap();
+        let renderer = crate::Renderer::new(Backend::Cpu);
+        for (columns, font_ratio) in [(536_870_912, 2.0), (1, 1e-30), (4096, 1.0)] {
+            let options = RenderOptions {
+                font_ratio,
+                ..RenderOptions::default()
+            };
+            assert!(
+                renderer
+                    .render(RenderRequest::new(&image, columns, options))
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            request_cells(&RenderRequest::new(
+                &image,
+                1024,
+                RenderOptions {
+                    font_ratio: 1.0,
+                    ..RenderOptions::default()
+                }
+            ))
+            .unwrap(),
+            MAX_FRAME_CELLS
+        );
+    }
 
     #[test]
     fn resizing_ignores_rgb_of_fully_transparent_pixels() {

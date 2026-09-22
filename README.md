@@ -38,6 +38,10 @@ cargo run --release -- --size 80 corpus --output rendered
 Only ANSI is written. Directory mode does not leave resized images or other
 intermediates behind.
 
+Each rendered frame is limited to 1,048,576 terminal cells. Oversized dimensions
+return an error before resizing; `max_batch_cells` controls grouping of frames
+and does not split an individual frame.
+
 ## Architecture note
 
 The public Rust and Python APIs share decoding, resizing, structured frames,

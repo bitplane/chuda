@@ -71,7 +71,7 @@ impl Renderer {
     pub fn with_batch_limit(backend: Backend, max_batch_cells: usize) -> Self {
         Self {
             requested: backend,
-            max_batch_cells: max_batch_cells.max(1),
+            max_batch_cells: max_batch_cells.clamp(1, u32::MAX as usize),
             state: Mutex::new(RendererState {
                 cuda_disabled: None,
                 fallback: None,
@@ -106,7 +106,7 @@ impl Renderer {
             let mut cells = 0usize;
             while end < requests.len() {
                 let request_cells = render::request_cells(&requests[end])?;
-                if end > start && cells + request_cells > self.max_batch_cells {
+                if end > start && request_cells > self.max_batch_cells.saturating_sub(cells) {
                     break;
                 }
                 cells += request_cells;
