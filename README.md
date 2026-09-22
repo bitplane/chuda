@@ -29,7 +29,7 @@ cargo run --release --features cuda -- --backend cuda --size 80 image.png > imag
 ```
 
 Directory mode recursively mirrors PNG paths and changes their suffix to
-`.ansi`:
+`.ansi`. It skips directory symlinks and accepts symlinks to PNG files:
 
 ```sh
 cargo run --release -- --size 80 corpus --output rendered

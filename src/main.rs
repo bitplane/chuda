@@ -65,12 +65,15 @@ fn render_tree(
     let mut files = Vec::new();
     while let Some(dir) = pending.pop() {
         for entry in fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
-            let path = entry?.path();
-            if path.is_dir() {
+            let entry = entry?;
+            let path = entry.path();
+            // Do not follow directory symlinks: they may point to an ancestor.
+            if entry.file_type()?.is_dir() {
                 pending.push(path);
             } else if path
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+                && path.is_file()
             {
                 files.push(path);
             }
@@ -91,4 +94,49 @@ fn render_tree(
             .with_context(|| format!("writing {}", target.display()))?;
     }
     Ok(())
+}
+
+#[cfg(all(test, unix, feature = "cpu"))]
+mod tests {
+    use super::*;
+    use std::{
+        os::unix::fs::symlink,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn directory_render_skips_symlink_cycles_but_accepts_linked_images() {
+        struct TemporaryDirectory(PathBuf);
+        impl Drop for TemporaryDirectory {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let temp = TemporaryDirectory(std::env::temp_dir().join(format!(
+            "chuda-tree-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        )));
+        let input = temp.0.join("input");
+        let output = temp.0.join("output");
+        fs::create_dir_all(input.join("nested")).unwrap();
+        let fixture = temp.0.join("source.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([20, 40, 60, 255]))
+            .save(&fixture)
+            .unwrap();
+        symlink(&fixture, input.join("image.png")).unwrap();
+        symlink(&fixture, input.join("nested/image.PNG")).unwrap();
+        symlink(".", input.join("loop")).unwrap();
+        symlink(".", input.join("directory.png")).unwrap();
+        render_tree(
+            &Renderer::new(Backend::Cpu),
+            &input,
+            &output,
+            1,
+            RenderOptions::default(),
+        )
+        .unwrap();
+        assert!(output.join("image.ansi").is_file());
+        assert!(output.join("nested/image.ansi").is_file());
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+    }
 }
