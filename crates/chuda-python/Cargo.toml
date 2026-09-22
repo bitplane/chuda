@@ -1,6 +1,7 @@
 [package]
 name = "chuda-python"
 version.workspace = true
+rust-version.workspace = true
 edition = "2024"
 publish = false
 license = "LGPL-3.0-or-later"

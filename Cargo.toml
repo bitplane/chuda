@@ -1,6 +1,7 @@
 [package]
 name = "chuda"
 version.workspace = true
+rust-version.workspace = true
 edition = "2024"
 license = "LGPL-3.0-or-later"
 description = "CUDA-accelerated high quality truecolour ANSI image renderer"
@@ -33,6 +34,7 @@ resolver = "2"
 
 [workspace.package]
 version = "0.2.3"
+rust-version = "1.88"
 
 [features]
 default = ["cpu"]

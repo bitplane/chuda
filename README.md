@@ -17,7 +17,7 @@ into the Rust binary. Chafa is not a build-time or runtime dependency.
 
 ## Requirements
 
-- Rust 1.85 or newer
+- Rust
 - CUDA Toolkit and an NVIDIA driver only when building or selecting the optional CUDA backend
 
 ## Build and run
