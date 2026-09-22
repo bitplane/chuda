@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn solid_opaque_cell_uses_first_zero_error_symbol() {
         let mut pixels = [0u8; 256];
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&[12, 34, 56, 255]);
         }
         let choice = choose(&pixels, 0);
