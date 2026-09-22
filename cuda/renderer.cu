@@ -89,6 +89,9 @@ extern "C" int cb_render_cuda(const uint8_t *pixels,uint32_t cells,const uint64_
     uint64_t edge_bias=uint64_t(transparent_threshold*64.0f*65025.0f*255.0f*3.0f);
     #define CU(x) do { if((e=(x))!=cudaSuccess){failure(e,message,capacity);goto done;} } while(0)
     if (cells > cached_cells) {
+        // Invalidate capacity before releasing buffers. If either allocation
+        // fails, even a smaller subsequent request must allocate both again.
+        cached_cells=0;
         cudaFree(cached_pixels); cached_pixels=nullptr;
         cudaFree(cached_output); cached_output=nullptr;
         CU(cudaMalloc(&cached_pixels,size_t(cells)*256));
