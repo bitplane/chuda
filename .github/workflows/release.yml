@@ -60,13 +60,10 @@ jobs:
         with:
           ref: ${{ env.RELEASE_REF }}
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      - name: Install pinned check toolchain
+        run: rustup toolchain install "$(cat rust-toolchain)" --profile minimal --component clippy --component rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --all-targets --locked
-      - run: cargo package --locked -p chuda
+      - run: sh tools/check.sh
 
   build-wheel:
     needs: [verify, test]

@@ -3,10 +3,7 @@
 
 # Run the same checks as CI before cutting a release.
 check:
-    cargo fmt --all -- --check
-    cargo clippy --workspace --locked --all-targets -- -D warnings
-    cargo test --workspace --locked --all-targets
-    cargo package --locked -p chuda
+    sh tools/check.sh
 
 # Build and install the CPU Python extension into the active virtualenv.
 python-dev:
@@ -24,5 +21,5 @@ test-gpu:
 # The pushed tag triggers the release workflow, which publishes the Rust crate,
 # Python package, and GitHub release after its checks pass.
 # Cut and push a versioned release; defaults to a patch bump.
-release level="patch":
+release level="patch": check
     cargo release {{level}} --execute --no-confirm
