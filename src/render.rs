@@ -27,6 +27,12 @@ impl SourceImage {
     }
 
     pub fn from_raw(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self> {
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(4));
+        if expected != Some(rgba.len()) {
+            bail!("RGBA buffer length does not match {width}x{height}");
+        }
         let image = RgbaImage::from_raw(width, height, rgba)
             .ok_or_else(|| anyhow::anyhow!("RGBA buffer length does not match {width}x{height}"))?;
         Ok(Self::from_rgba(image))
@@ -317,6 +323,15 @@ fn encode_ansi(choices: &[Choice], columns: u32, rows: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_images_require_exact_buffer_lengths() {
+        assert!(SourceImage::from_raw(1, 1, vec![255; 4]).is_ok());
+        for len in [0, 3, 5, 8] {
+            assert!(SourceImage::from_raw(1, 1, vec![255; len]).is_err());
+        }
+        assert!(SourceImage::from_raw(u32::MAX, u32::MAX, vec![]).is_err());
+    }
 
     #[test]
     fn oversized_requests_return_errors_before_allocation() {

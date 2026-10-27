@@ -1,4 +1,7 @@
 import logging
+from array import array
+
+import pytest
 
 import chuda
 
@@ -38,3 +41,17 @@ def test_auto_logs_one_fallback_warning(caplog):
     renderer.render(image(), 1)
     renderer.render(image(), 1)
     assert len([record for record in caplog.records if "falling back to CPU" in record.message]) == 1
+
+
+@pytest.mark.parametrize("size", [0, 3, 5, 8])
+def test_rgba_rejects_inexact_buffer_lengths(size):
+    with pytest.raises(ValueError, match="buffer length"):
+        chuda.Image.from_rgba(1, 1, bytes(size))
+
+
+def test_rgba_rejects_multibyte_elements():
+    with pytest.raises(ValueError, match="one-byte elements"):
+        chuda.Image.from_rgba(1, 1, array("H", [255, 0]))
+    # An explicit byte view remains available for callers who need it.
+    source = memoryview(array("H", [255, 0])).cast("B")
+    assert chuda.Image.from_rgba(1, 1, source).width == 1

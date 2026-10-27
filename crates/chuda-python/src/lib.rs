@@ -194,11 +194,16 @@ fn emit_warning(py: Python<'_>, renderer: &chuda_core::Renderer) -> PyResult<()>
 }
 
 fn buffer_bytes(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
-    py.import("builtins")?
+    let view = py
+        .import("builtins")?
         .getattr("memoryview")?
-        .call1((value,))?
-        .call_method0("tobytes")?
-        .extract()
+        .call1((value,))?;
+    if view.getattr("itemsize")?.extract::<usize>()? != 1 {
+        return Err(PyValueError::new_err(
+            "image data must have one-byte elements; explicitly cast to bytes if intended",
+        ));
+    }
+    view.call_method0("tobytes")?.extract()
 }
 
 fn value_error(error: anyhow::Error) -> PyErr {
