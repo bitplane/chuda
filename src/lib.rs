@@ -142,6 +142,13 @@ impl Renderer {
         render::split_frames(prepared, choices, actual)
     }
 
+    fn disable_cuda(&self, error: &anyhow::Error) {
+        let reason = format!("{error:#}");
+        let mut state = self.state.lock().expect("renderer state poisoned");
+        state.cuda_disabled = Some(reason.clone());
+        state.fallback = Some(format!("CUDA unavailable ({reason}); falling back to CPU"));
+    }
+
     fn render_auto(&self, pixels: &[u8], threshold: f32) -> Result<(Vec<Choice>, Backend)> {
         let disabled = self
             .state
@@ -152,13 +159,7 @@ impl Renderer {
         if !disabled {
             match render_cuda(pixels, threshold) {
                 Ok(choices) => return Ok((choices, Backend::Cuda)),
-                Err(error) => {
-                    let reason = error.to_string();
-                    let mut state = self.state.lock().expect("renderer state poisoned");
-                    state.cuda_disabled = Some(reason.clone());
-                    state.fallback =
-                        Some(format!("CUDA unavailable ({reason}); falling back to CPU"));
-                }
+                Err(error) => self.disable_cuda(&error),
             }
         }
         Ok((render_cpu(pixels, threshold)?, Backend::Cpu))
@@ -202,6 +203,18 @@ mod tests {
     use super::*;
     #[cfg(all(feature = "cpu", feature = "cuda"))]
     use std::path::PathBuf;
+
+    #[test]
+    fn fallback_warning_preserves_the_error_chain() {
+        let renderer = Renderer::new(Backend::Auto);
+        let error = anyhow!("driver unavailable").context("CUDA initialization failed");
+        renderer.disable_cuda(&error);
+        assert_eq!(
+            renderer.take_fallback_warning().unwrap(),
+            "CUDA unavailable (CUDA initialization failed: driver unavailable); falling back to CPU"
+        );
+        assert!(renderer.take_fallback_warning().is_none());
+    }
 
     #[test]
     fn backend_names_parse() {

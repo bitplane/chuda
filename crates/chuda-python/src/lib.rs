@@ -207,10 +207,10 @@ fn buffer_bytes(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
 }
 
 fn value_error(error: anyhow::Error) -> PyErr {
-    PyValueError::new_err(error.to_string())
+    PyValueError::new_err(format!("{error:#}"))
 }
 fn runtime_error(error: anyhow::Error) -> PyErr {
-    PyRuntimeError::new_err(error.to_string())
+    PyRuntimeError::new_err(format!("{error:#}"))
 }
 
 #[pymodule]
@@ -220,4 +220,28 @@ fn chuda(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyFrame>()?;
     module.add_class::<PyRenderer>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn python_errors_preserve_the_error_chain() {
+        Python::initialize();
+        Python::attach(|_| {
+            let error = anyhow::anyhow!("driver unavailable").context("CUDA initialization failed");
+            assert!(
+                runtime_error(error)
+                    .to_string()
+                    .contains("CUDA initialization failed: driver unavailable")
+            );
+            let error = anyhow::anyhow!("invalid PNG header").context("decoding image");
+            assert!(
+                value_error(error)
+                    .to_string()
+                    .contains("decoding image: invalid PNG header")
+            );
+        });
+    }
 }
