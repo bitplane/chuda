@@ -165,8 +165,14 @@ mod tests {
         let output = temp.0.join("output");
         fs::create_dir_all(&input).unwrap();
         fs::create_dir_all(&output).unwrap();
+        // This input collision can only exist on a case-sensitive filesystem.
+        fs::write(input.join("same.png"), b"not a PNG").unwrap();
+        if input.join("same.PNG").exists() {
+            eprintln!("skipping collision fixture on a case-insensitive filesystem");
+            return;
+        }
         // Invalid PNG data also proves collision detection precedes decoding.
-        for name in ["a.png", "same.png", "same.PNG"] {
+        for name in ["a.png", "same.PNG"] {
             fs::write(input.join(name), b"not a PNG").unwrap();
         }
         fs::write(output.join("same.ansi"), b"existing output").unwrap();
