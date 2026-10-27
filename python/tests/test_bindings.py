@@ -17,6 +17,7 @@ def test_structured_frame_and_ansi():
     assert len(frame.foreground) == 3
     assert len(frame.background) == 3
     assert len(frame.background_transparent) == 1
+    assert frame.to_ansi().startswith(b"\x1b[0m")
     assert frame.to_ansi().endswith(b"\x1b[0m\n")
 
 

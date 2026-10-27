@@ -272,6 +272,8 @@ pub(crate) fn split_frames(
 
 fn encode_ansi(choices: &[Choice], columns: u32, rows: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(choices.len() * 32);
+    // Colours alone do not clear inherited inverse, conceal, or underline.
+    out.extend_from_slice(b"\x1b[0m");
     let mut previous_fg = None;
     let mut previous_bg = None;
     for cy in 0..rows {
@@ -396,7 +398,7 @@ mod tests {
         let choices = [cell(' ', [0, 0, 0], None), cell(' ', [0, 0, 0], None)];
         assert_eq!(
             encode_ansi(&choices, 2, 1),
-            b"\x1b[38;2;0;0;0;49m  \x1b[0m\n"
+            b"\x1b[0m\x1b[38;2;0;0;0;49m  \x1b[0m\n"
         );
     }
 
@@ -410,7 +412,7 @@ mod tests {
         ];
         assert_eq!(
             encode_ansi(&choices, 4, 1),
-            b"\x1b[38;2;1;2;3;48;2;4;5;6ma\x1b[48;2;7;8;9mb\x1b[38;2;10;11;12mc\x1b[49md\x1b[0m\n"
+            b"\x1b[0m\x1b[38;2;1;2;3;48;2;4;5;6ma\x1b[48;2;7;8;9mb\x1b[38;2;10;11;12mc\x1b[49md\x1b[0m\n"
         );
     }
 }
