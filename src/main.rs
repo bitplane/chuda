@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -80,13 +81,27 @@ fn render_tree(
         }
     }
     files.sort();
+    // Resolve every destination before rendering or writing any output.
+    let mut destinations = HashMap::new();
+    let mut jobs = Vec::with_capacity(files.len());
     for input in files {
+        let mut target = output.join(input.strip_prefix(root)?);
+        target.set_extension("ansi");
+        if let Some(previous) = destinations.insert(target.clone(), input.clone()) {
+            bail!(
+                "output collision: {} and {} both map to {}",
+                previous.display(),
+                input.display(),
+                target.display()
+            );
+        }
+        jobs.push((input, target));
+    }
+    for (input, target) in jobs {
         let image =
             SourceImage::open(&input).with_context(|| format!("rendering {}", input.display()))?;
         let frame = renderer.render(RenderRequest::new(&image, width, options))?;
         warn_fallback(renderer);
-        let mut target = output.join(input.strip_prefix(root)?);
-        target.set_extension("ansi");
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -104,14 +119,15 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    struct TemporaryDirectory(PathBuf);
+    impl Drop for TemporaryDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn directory_render_skips_symlink_cycles_but_accepts_linked_images() {
-        struct TemporaryDirectory(PathBuf);
-        impl Drop for TemporaryDirectory {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
         let temp = TemporaryDirectory(std::env::temp_dir().join(format!(
             "chuda-tree-{}-{}", std::process::id(),
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
@@ -138,5 +154,36 @@ mod tests {
         assert!(output.join("image.ansi").is_file());
         assert!(output.join("nested/image.ansi").is_file());
         assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+    }
+    #[test]
+    fn directory_render_rejects_collisions_before_writing() {
+        let temp = TemporaryDirectory(std::env::temp_dir().join(format!(
+            "chuda-collision-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        )));
+        let input = temp.0.join("input");
+        let output = temp.0.join("output");
+        fs::create_dir_all(&input).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        // Invalid PNG data also proves collision detection precedes decoding.
+        for name in ["a.png", "same.png", "same.PNG"] {
+            fs::write(input.join(name), b"not a PNG").unwrap();
+        }
+        fs::write(output.join("same.ansi"), b"existing output").unwrap();
+        let error = render_tree(
+            &Renderer::new(Backend::Cpu),
+            &input,
+            &output,
+            1,
+            RenderOptions::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("output collision"));
+        assert!(error.to_string().contains("same.PNG"));
+        assert_eq!(
+            fs::read(output.join("same.ansi")).unwrap(),
+            b"existing output"
+        );
+        assert!(!output.join("a.ansi").exists());
     }
 }
