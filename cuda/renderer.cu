@@ -1,6 +1,8 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <cstdio>
+#include <map>
+#include <new>
 
 struct Choice { uint32_t codepoint; uint8_t fg[3], bg[3], transparent_bg; };
 struct Candidate { uint64_t error; uint32_t index; uint8_t fg[3], bg[3], transparent_bg; };
@@ -65,12 +67,17 @@ __global__ void score(const uint8_t *pixels, uint32_t cells, const uint64_t *mas
 }
 static int failure(cudaError_t e, char *message, size_t capacity) { if(message&&capacity) snprintf(message,capacity,"%s",cudaGetErrorString(e)); return int(e); }
 
-static uint8_t *cached_pixels = nullptr;
-static uint64_t *cached_masks = nullptr;
-static uint32_t *cached_codes = nullptr;
-static Choice *cached_output = nullptr;
-static uint32_t cached_cells = 0;
-static uint32_t cached_symbols = 0;
+// Access is serialized by the Rust CUDA_LOCK. Device allocations must never
+// be reused by a kernel launched on another thread's current device.
+struct DeviceCache {
+    uint8_t *pixels = nullptr;
+    uint64_t *masks = nullptr;
+    uint32_t *codes = nullptr;
+    Choice *output = nullptr;
+    uint32_t cells = 0;
+    uint32_t symbols = 0;
+};
+static std::map<int, DeviceCache> device_caches;
 
 extern "C" int cb_cuda_available(char *message, size_t capacity) {
     int count = 0;
@@ -85,7 +92,21 @@ extern "C" int cb_cuda_available(char *message, size_t capacity) {
 
 extern "C" int cb_render_cuda(const uint8_t *pixels,uint32_t cells,const uint64_t *masks,const uint32_t *codes,
  uint32_t nsymbols,Choice *output,float transparent_threshold,char *message,size_t capacity) {
-    cudaError_t e=cudaSuccess;
+    int device;
+    cudaError_t e = cudaGetDevice(&device);
+    if (e != cudaSuccess) return failure(e, message, capacity);
+    DeviceCache *cache;
+    try {
+        cache = &device_caches[device];
+    } catch (const std::bad_alloc &) {
+        return failure(cudaErrorMemoryAllocation, message, capacity);
+    }
+    auto &cached_pixels = cache->pixels;
+    auto &cached_masks = cache->masks;
+    auto &cached_codes = cache->codes;
+    auto &cached_output = cache->output;
+    auto &cached_cells = cache->cells;
+    auto &cached_symbols = cache->symbols;
     uint64_t edge_bias=uint64_t(transparent_threshold*64.0f*65025.0f*255.0f*3.0f);
     #define CU(x) do { if((e=(x))!=cudaSuccess){failure(e,message,capacity);goto done;} } while(0)
     if (cells > cached_cells) {
@@ -99,6 +120,7 @@ extern "C" int cb_render_cuda(const uint8_t *pixels,uint32_t cells,const uint64_
         cached_cells=cells;
     }
     if (nsymbols != cached_symbols) {
+        cached_symbols=0;
         cudaFree(cached_masks); cached_masks=nullptr;
         cudaFree(cached_codes); cached_codes=nullptr;
         CU(cudaMalloc(&cached_masks,size_t(nsymbols)*8));

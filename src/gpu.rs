@@ -57,3 +57,48 @@ pub fn render(pixels: &[u8], transparent_threshold: f32) -> Result<Vec<Choice>> 
     }
     Ok(output)
 }
+
+#[cfg(all(test, feature = "cpu"))]
+mod tests {
+    use super::*;
+
+    unsafe extern "C" {
+        fn cudaGetDeviceCount(count: *mut i32) -> i32;
+        fn cudaGetDevice(device: *mut i32) -> i32;
+        fn cudaSetDevice(device: i32) -> i32;
+    }
+
+    #[test]
+    #[ignore = "requires two working NVIDIA GPUs"]
+    fn cached_buffers_follow_the_current_device() {
+        let mut count = 0;
+        let mut original = 0;
+        unsafe {
+            assert_eq!(cudaGetDeviceCount(&mut count), 0);
+            assert!(count >= 2, "requires two working NVIDIA GPUs");
+            assert_eq!(cudaGetDevice(&mut original), 0);
+        }
+        struct RestoreDevice(i32);
+        impl Drop for RestoreDevice {
+            fn drop(&mut self) {
+                unsafe {
+                    cudaSetDevice(self.0);
+                }
+            }
+        }
+        let _restore = RestoreDevice(original);
+        // Revisit each cache with different sizes and nonuniform pixels.
+        for (device, cells) in [(0, 2), (1, 1), (0, 1), (1, 3)] {
+            unsafe {
+                assert_eq!(cudaSetDevice(device), 0);
+            }
+            let pixels: Vec<u8> = (0..cells * 256)
+                .map(|i| ((i * 37 + device as usize * 13) % 256) as u8)
+                .collect();
+            assert_eq!(
+                render(&pixels, 0.1).unwrap(),
+                crate::cpu::render(&pixels, 0.1)
+            );
+        }
+    }
+}
